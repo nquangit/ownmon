@@ -5,41 +5,25 @@ on:
     tags:
       - 'v*.*.*'  # Triggers on version tags like v1.0.0
 
+permissions:
+  contents: write  # Required to create releases and upload assets
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  create-release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-      version: ${{ steps.get_version.outputs.version }}
-    
-    steps:
-      - name: Get version from tag
-        id: get_version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
-
-  build-and-upload:
-    name: Build and Upload Assets
-    needs: create-release
+  build-and-release:
+    name: Build and Create Release
     runs-on: windows-latest
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: get_version
+        shell: bash
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -59,39 +43,67 @@ jobs:
       - name: Create ZIP archive
         shell: pwsh
         run: |
-          $version = "${{ needs.create-release.outputs.version }}"
+          $version = "${{ steps.get_version.outputs.version }}"
           Compress-Archive -Path target/release/ownmon.exe -DestinationPath "ownmon-v$version-windows-x64.zip"
-
-      - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create-release.outputs.upload_url }}
-          asset_path: ./ownmon-v${{ needs.create-release.outputs.version }}-windows-x64.zip
-          asset_name: ownmon-v${{ needs.create-release.outputs.version }}-windows-x64.zip
-          asset_content_type: application/zip
 
       - name: Generate changelog
         id: changelog
-        uses: metcalfc/changelog-generator@v4.1.0
-        with:
-          myToken: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          # Get commits since last tag
+          PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
+          if [ -z "$PREV_TAG" ]; then
+            CHANGELOG=$(git log --pretty=format:"- %s (%h)" --no-merges)
+          else
+            CHANGELOG=$(git log ${PREV_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          fi
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Update Release Description
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const release = await github.rest.repos.getReleaseByTag({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag: context.ref.replace('refs/tags/', '')
-            });
-            
-            await github.rest.repos.updateRelease({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              release_id: release.data.id,
-              body: `## What's Changed\n\n${{ steps.changelog.outputs.changelog }}\n\n## Installation\n\nDownload \`ownmon-v${{ needs.create-release.outputs.version }}-windows-x64.zip\`, extract, and run \`ownmon.exe\`.`
-            });
+      - name: Create Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          TAG="${GITHUB_REF#refs/tags/}"
+          
+          # Create release notes
+          cat > release_notes.md << 'EOF'
+          ## What's Changed
+          
+          ${{ steps.changelog.outputs.changelog }}
+          
+          ## Installation
+          
+          1. Download `ownmon-v${{ steps.get_version.outputs.version }}-windows-x64.zip`
+          2. Extract the ZIP file
+          3. Run `ownmon.exe`
+          
+          ## Requirements
+          
+          - Windows 10/11 (64-bit)
+          
+          ## Features
+          
+          - 📊 Real-time activity tracking
+          - ⏰ Smart AFK detection
+          - 💾 SQLite persistence
+          - 🌐 REST API with WebSocket support
+          - 🔵 System tray integration
+          EOF
+          
+          # Check if this is a pre-release (beta, alpha, rc)
+          PRERELEASE=""
+          if [[ "$TAG" =~ -beta|-alpha|-rc ]]; then
+            PRERELEASE="--prerelease"
+          fi
+          
+          # Create release with notes
+          gh release create "$TAG" \
+            "ownmon-v${VERSION}-windows-x64.zip" \
+            --title "Release $TAG" \
+            --notes-file release_notes.md \
+            $PRERELEASE
+
