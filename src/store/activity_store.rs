@@ -537,8 +537,8 @@ mod tests {
         store.switch_session(2, 200, "notepad.exe", "Untitled");
         store.add_input_counts(2, 0, 0);
 
-        // Sleep to ensure session duration >= 3s (min_session_duration)
-        std::thread::sleep(std::time::Duration::from_secs(3));
+        // Sleep to ensure session duration >= 10s (min_session_duration)
+        std::thread::sleep(std::time::Duration::from_secs(10));
 
         store.switch_session(3, 300, "chrome.exe", "Google");
 
@@ -586,11 +586,11 @@ mod tests {
 
         store.switch_session(1, 100, "chrome.exe", "Tab 1");
         store.add_input_counts(10, 5, 0);
-        std::thread::sleep(std::time::Duration::from_secs(3));
+        std::thread::sleep(std::time::Duration::from_secs(10));
 
         store.switch_session(2, 100, "chrome.exe", "Tab 2");
         store.add_input_counts(20, 10, 0);
-        std::thread::sleep(std::time::Duration::from_secs(3));
+        std::thread::sleep(std::time::Duration::from_secs(10));
 
         store.switch_session(3, 200, "code.exe", "Editor");
 
@@ -622,7 +622,7 @@ mod tests {
         for i in 0..10 {
             store.switch_session(i, i as u32, &format!("app{}.exe", i), "Window");
             store.add_input_counts(1, 0, 0); // Add some activity
-            std::thread::sleep(std::time::Duration::from_millis(3000)); // Sleep 3s to meet min duration
+            std::thread::sleep(std::time::Duration::from_millis(10000)); // Sleep 10s to meet min duration
         }
 
         // Final switch to finalize the last session
