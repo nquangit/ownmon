@@ -116,7 +116,7 @@ fn poll_cycle(last_hwnd: &mut Option<isize>, last_title: &mut String, track_titl
     };
 
     let hwnd_value = hwnd.0 as isize;
-    let window_changed = last_hwnd.map_or(true, |last| last != hwnd_value);
+    let window_changed = last_hwnd.is_none_or(|last| last != hwnd_value);
 
     // Get window info
     let current_title = get_window_text(hwnd);

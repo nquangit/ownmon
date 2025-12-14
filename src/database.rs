@@ -258,6 +258,7 @@ impl Database {
     }
 
     /// Saves a completed window session.
+    #[allow(clippy::too_many_arguments)]
     pub fn save_session(
         &self,
         process_name: &str,
@@ -321,6 +322,7 @@ impl Database {
 
     /// Queries media with flexible filtering.
     /// Returns (media_records, total_count).
+    #[allow(clippy::too_many_arguments)]
     pub fn query_media_flexible(
         &self,
         date: Option<&str>,
@@ -647,6 +649,7 @@ impl Database {
 
     /// Queries sessions with flexible filtering.
     /// Returns (sessions, total_count).
+    #[allow(clippy::too_many_arguments)]
     pub fn query_sessions_flexible(
         &self,
         date: Option<&str>,
@@ -775,14 +778,18 @@ impl Database {
                 return true;
             }
         }
-
         false
     }
 }
 
 /// Matches a pattern with wildcards against a string.
-/// * matches zero or more characters
-/// ? matches exactly one character
+///
+/// Supports SQLite LIKE pattern matching:
+///
+///   * matches zero or more characters
+///
+///   ? matches exactly one character
+///
 fn pattern_matches(pattern: &str, text: &str) -> bool {
     let p_chars = pattern.chars().peekable();
     let t_chars = text.chars().peekable();
