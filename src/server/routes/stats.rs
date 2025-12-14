@@ -69,7 +69,7 @@ pub async fn get_stats() -> Json<StatsResponse> {
     if let Some(current) = &store.current_session {
         total_keystrokes += current.keystrokes;
         total_clicks += current.mouse_clicks;
-        total_duration += current.duration_secs() as i64;
+        total_duration += current.duration_secs();
         unique_apps.insert(current.process_name.clone());
     }
 
