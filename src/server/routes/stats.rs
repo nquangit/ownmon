@@ -31,16 +31,62 @@ pub struct DailyQuery {
 
 /// GET /api/stats - Today's summary statistics.
 pub async fn get_stats() -> Json<StatsResponse> {
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+
+    // Query all of today's sessions from database using flexible query
+    let (sessions, _total) = DATABASE
+        .as_ref()
+        .and_then(|db| db.lock().ok())
+        .and_then(|d| {
+            d.query_sessions_flexible(
+                Some(&today), // date filter
+                None,         // from
+                None,         // to
+                None,         // process
+                10000,        // limit (large number to get all)
+                0,            // offset
+                false,        // order_desc
+            )
+            .ok()
+        })
+        .unwrap_or((vec![], 0));
+
+    // Compute stats from database sessions
+    let mut total_keystrokes = 0u64;
+    let mut total_clicks = 0u64;
+    let mut total_duration = 0i64;
+    let mut unique_apps = std::collections::HashSet::new();
+
+    for session in &sessions {
+        total_keystrokes += session.keystrokes as u64;
+        total_clicks += session.clicks as u64;
+        total_duration += session.duration_secs;
+        unique_apps.insert(session.process_name.clone());
+    }
+
+    // Add current session if active (not yet in database)
     let store = ACTIVITY_STORE.read().unwrap();
-    let summary = store.get_daily_summary();
+    if let Some(current) = &store.current_session {
+        total_keystrokes += current.keystrokes;
+        total_clicks += current.mouse_clicks;
+        total_duration += current.duration_secs() as i64;
+        unique_apps.insert(current.process_name.clone());
+    }
+
+    let media_time = store.total_media_time_secs();
 
     Json(StatsResponse {
-        sessions: summary.session_count,
-        unique_apps: summary.app_count,
-        keystrokes: summary.total_keystrokes,
-        clicks: summary.total_clicks,
-        focus_time_secs: summary.total_focus_time_secs,
-        media_time_secs: store.total_media_time_secs(),
+        sessions: sessions.len() as u32
+            + if store.current_session.is_some() {
+                1
+            } else {
+                0
+            },
+        unique_apps: unique_apps.len() as u32,
+        keystrokes: total_keystrokes,
+        clicks: total_clicks,
+        focus_time_secs: total_duration.max(0) as u64,
+        media_time_secs: media_time,
     })
 }
 

@@ -3,16 +3,70 @@
 //! Phase 5: Full application with system tray integration.
 //! The application runs silently with a system tray icon.
 
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use ownmon::monitor::*;
 use ownmon::store::ACTIVITY_STORE;
 use ownmon::tray::setup_tray;
 use ownmon::winapi_utils::*;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Check for single instance using lock file
+    use std::fs::OpenOptions;
+    use std::io::Write;
+    use std::path::PathBuf;
+
+    // Create lock file in APPDATA
+    let lock_path: PathBuf = match std::env::var("APPDATA") {
+        Ok(appdata) => PathBuf::from(appdata).join("ownmon").join("ownmon.lock"),
+        Err(_) => PathBuf::from(".").join("ownmon.lock"),
+    };
+
+    // Try to create lock file exclusively
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_path)
+    {
+        Ok(mut file) => {
+            // Write PID for debugging
+            let _ = write!(file, "{}", std::process::id());
+
+            // Keep lock file - will be deleted on exit
+            let _lock_guard = LockFileGuard(lock_path.clone());
+            run_application(_lock_guard)
+        }
+        Err(_) => {
+            // Lock file exists - another instance is running
+            use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING, MB_OK};
+            unsafe {
+                MessageBoxW(
+                    None,
+                    windows::core::w!("OwnMon is already running.\n\nCheck the system tray for the application icon."),
+                    windows::core::w!("OwnMon - Already Running"),
+                    MB_OK | MB_ICONWARNING
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+// RAII guard to delete lock file on exit
+struct LockFileGuard(PathBuf);
+
+impl Drop for LockFileGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn run_application(_lock: LockFileGuard) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
