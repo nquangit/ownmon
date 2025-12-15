@@ -16,43 +16,72 @@ use std::thread;
 use std::time::Duration;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Check for single instance using lock file
-    use std::fs::OpenOptions;
-    use std::io::Write;
-    use std::path::PathBuf;
+    // Check for single instance using lock file with PID validation
+    use std::fs::{self, OpenOptions};
+    use std::io::{Read, Write};
 
-    // Create lock file in APPDATA
+    // Create lock file path in APPDATA
     let lock_path: PathBuf = match std::env::var("APPDATA") {
         Ok(appdata) => PathBuf::from(appdata).join("ownmon").join("ownmon.lock"),
         Err(_) => PathBuf::from(".").join("ownmon.lock"),
     };
 
-    // Try to create lock file exclusively
-    match OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&lock_path)
-    {
-        Ok(mut file) => {
-            // Write PID for debugging
-            let _ = write!(file, "{}", std::process::id());
-
-            // Keep lock file - will be deleted on exit
-            let _lock_guard = LockFileGuard(lock_path.clone());
-            run_application(_lock_guard)
-        }
-        Err(_) => {
-            // Lock file exists - another instance is running
-            use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING, MB_OK};
-            unsafe {
-                MessageBoxW(
-                    None,
-                    windows::core::w!("OwnMon is already running.\n\nCheck the system tray for the application icon."),
-                    windows::core::w!("OwnMon - Already Running"),
-                    MB_OK | MB_ICONWARNING
-                );
+    // Check if lock file exists and validate PID
+    if lock_path.exists() {
+        // Read the PID from lock file
+        if let Ok(mut file) = fs::File::open(&lock_path) {
+            let mut pid_str = String::new();
+            if file.read_to_string(&mut pid_str).is_ok() {
+                if let Ok(pid) = pid_str.trim().parse::<u32>() {
+                    // Check if process is still running
+                    if is_process_running(pid) {
+                        // Another instance is actually running
+                        use windows::Win32::UI::WindowsAndMessaging::{
+                            MessageBoxW, MB_ICONWARNING, MB_OK,
+                        };
+                        unsafe {
+                            MessageBoxW(
+                                None,
+                                windows::core::w!("OwnMon is already running.\n\nCheck the system tray for the application icon."),
+                                windows::core::w!("OwnMon - Already Running"),
+                                MB_OK | MB_ICONWARNING
+                            );
+                        }
+                        return Ok(());
+                    }
+                }
             }
-            Ok(())
+        }
+        // Stale lock file - remove it
+        let _ = fs::remove_file(&lock_path);
+    }
+
+    // Create new lock file with our PID
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&lock_path)?;
+
+    write!(file, "{}", std::process::id())?;
+
+    // Keep lock file - will be deleted on exit
+    let _lock_guard = LockFileGuard(lock_path.clone());
+    run_application(_lock_guard)
+}
+
+/// Check if a process with given PID is running
+fn is_process_running(pid: u32) -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    unsafe {
+        match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(handle) => {
+                let _ = CloseHandle(handle);
+                true
+            }
+            Err(_) => false,
         }
     }
 }
@@ -136,7 +165,6 @@ fn run_application(_lock: LockFileGuard) -> Result<(), Box<dyn std::error::Error
     println!("════════════════════════════════════════════════════════════════");
     println!("🎯 OwnMon is now running in the system tray!");
     println!("   • Right-click the tray icon for options");
-    println!("   • Select 'Show Statistics' to view activity");
     println!("   • Select 'Exit' or press Ctrl+C to quit");
     println!();
     println!(

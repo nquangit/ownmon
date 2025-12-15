@@ -9,11 +9,10 @@ pub mod menu;
 pub use icon::*;
 pub use menu::*;
 
-use crate::store::ACTIVITY_STORE;
 use crate::winapi_utils::post_quit_message;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tray_icon::menu::MenuEvent;
+use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{TrayIcon, TrayIconBuilder};
 
 /// Sets up the system tray icon and menu.
@@ -25,8 +24,10 @@ use tray_icon::{TrayIcon, TrayIconBuilder};
 /// The `TrayIcon` instance. Keep this alive for the tray to remain visible.
 pub fn setup_tray(shutdown: Arc<AtomicBool>) -> Result<TrayIcon, Box<dyn std::error::Error>> {
     let icon = create_default_icon()?;
-    let menu = create_tray_menu();
-
+    let menu = Menu::with_items(&[
+        // Future: Could add "Open Dashboard" to launch web UI
+        &MenuItem::with_id("exit", "Exit", true, None),
+    ])?;
     let tray = TrayIconBuilder::new()
         .with_tooltip("OwnMon - Activity Monitor")
         .with_icon(icon)
@@ -62,9 +63,6 @@ fn spawn_menu_handler(shutdown: Arc<AtomicBool>) {
 /// Handles a menu item click.
 fn handle_menu_event(menu_id: &str, shutdown: &Arc<AtomicBool>) {
     match menu_id {
-        "show_stats" => {
-            show_stats();
-        }
         "exit" => {
             tracing::info!("Exit requested from tray menu");
             shutdown.store(true, Ordering::SeqCst);
@@ -73,24 +71,5 @@ fn handle_menu_event(menu_id: &str, shutdown: &Arc<AtomicBool>) {
         _ => {
             tracing::debug!(menu_id, "Unknown menu event");
         }
-    }
-}
-
-/// Shows current statistics.
-fn show_stats() {
-    if let Ok(store) = ACTIVITY_STORE.read() {
-        let summary = store.get_daily_summary();
-
-        println!();
-        println!("════════════════════════════════════════");
-        println!("📊 OwnMon Statistics");
-        println!("════════════════════════════════════════");
-        println!("Sessions:    {}", summary.session_count);
-        println!("Unique Apps: {}", summary.app_count);
-        println!("Keystrokes:  {}", summary.total_keystrokes);
-        println!("Clicks:      {}", summary.total_clicks);
-        println!("Focus Time:  {}s", summary.total_focus_time_secs);
-        println!("════════════════════════════════════════");
-        println!();
     }
 }
