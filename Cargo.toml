@@ -19,6 +19,7 @@ windows = { version = "0.58", features = [
     "Win32_System_Threading",
     "Win32_System_ProcessStatus",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_Security_Credentials",
     # Media Control (WinRT)
     "Media_Control",
     "Foundation",
@@ -56,4 +57,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync"] }
 tower-http = { version = "0.5", features = ["cors"] }
 futures = "0.3"
 
-
+# === Cryptography (Integrity System) ===
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+sha2 = "0.10"
+rand = "0.8"
+base64 = "0.22"
+hex = "0.4"

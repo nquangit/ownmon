@@ -114,6 +114,9 @@ fn run_application(_lock: LockFileGuard) -> Result<(), Box<dyn std::error::Error
     let _ = &*ownmon::store::DATABASE; // Trigger lazy init
     println!("   ✓ Database ready");
 
+    // Check and compute any missing daily integrity records from previous days
+    ownmon::store::check_and_compute_missing_integrity();
+
     // Start HTTP server
     println!("🔧 Starting HTTP server...");
     let broadcast_tx = ownmon::server::start_server();

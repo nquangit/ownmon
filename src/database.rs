@@ -13,6 +13,16 @@ pub struct Database {
     conn: Arc<Mutex<Connection>>,
 }
 
+/// Record for daily integrity verification.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DailyIntegrityRecord {
+    pub date: String,
+    pub merkle_root: String,
+    pub prev_day_root: Option<String>,
+    pub session_count: u32,
+    pub signature: String,
+    pub created_at: String,
+}
 impl Database {
     /// Opens or creates the database at the default location.
     ///
@@ -77,7 +87,10 @@ impl Database {
                 keystrokes INTEGER DEFAULT 0,
                 clicks INTEGER DEFAULT 0,
                 scrolls INTEGER DEFAULT 0,
-                is_idle BOOLEAN DEFAULT 0
+                is_idle BOOLEAN DEFAULT 0,
+                hash TEXT,
+                signature TEXT,
+                prev_hash TEXT
             );
 
             -- Media playback
@@ -124,11 +137,25 @@ impl Database {
                 updated_at TEXT NOT NULL
             );
 
+            -- Daily integrity (Merkle roots per day)
+            CREATE TABLE IF NOT EXISTS daily_integrity (
+                date TEXT PRIMARY KEY,
+                merkle_root TEXT NOT NULL,
+                prev_day_root TEXT,
+                session_count INTEGER NOT NULL,
+                signature TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
             -- Indexes for date queries
             CREATE INDEX IF NOT EXISTS idx_sessions_start ON sessions(start_time);
             CREATE INDEX IF NOT EXISTS idx_media_start ON media(start_time);
+            CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(date(start_time));
             "#,
         )?;
+
+        // Migration: Add integrity columns if they don't exist
+        Self::migrate_integrity_columns(&conn)?;
 
         // Insert default blacklist entries if table is empty
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM blacklist", [], |r| r.get(0))?;
@@ -257,7 +284,163 @@ impl Database {
         Ok(())
     }
 
-    /// Saves a completed window session.
+    /// Migrates existing database to add integrity columns.
+    fn migrate_integrity_columns(conn: &Connection) -> SqlResult<()> {
+        // Check if hash column exists
+        let has_hash: bool = conn.prepare("SELECT hash FROM sessions LIMIT 1").is_ok();
+
+        if !has_hash {
+            tracing::info!("Migrating database: adding integrity columns to sessions");
+            conn.execute_batch(
+                r#"
+                ALTER TABLE sessions ADD COLUMN hash TEXT;
+                ALTER TABLE sessions ADD COLUMN signature TEXT;
+                ALTER TABLE sessions ADD COLUMN prev_hash TEXT;
+                "#,
+            )?;
+            tracing::info!("Migration complete: integrity columns added");
+        }
+
+        Ok(())
+    }
+
+    /// Gets the last session hash for chaining.
+    pub fn get_last_session_hash(&self) -> SqlResult<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let result: Result<String, _> = conn.query_row(
+            "SELECT hash FROM sessions WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(hash) => Ok(Some(hash)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Gets all session hashes for a specific date (for Merkle tree).
+    pub fn get_session_hashes_for_date(&self, date: &str) -> SqlResult<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT hash FROM sessions WHERE hash IS NOT NULL AND date(start_time) = ?1 ORDER BY id",
+        )?;
+        let hashes = stmt
+            .query_map(params![date], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(hashes)
+    }
+
+    /// Gets the count of sessions for a specific date.
+    pub fn get_session_count_for_date(&self, date: &str) -> SqlResult<u32> {
+        let conn = self.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE date(start_time) = ?1",
+            params![date],
+            |row| row.get(0),
+        )?;
+        Ok(count as u32)
+    }
+
+    /// Gets the previous day's Merkle root for chaining.
+    pub fn get_previous_day_root(&self, date: &str) -> SqlResult<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let result: Result<String, _> = conn.query_row(
+            "SELECT merkle_root FROM daily_integrity WHERE date < ?1 ORDER BY date DESC LIMIT 1",
+            params![date],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(root) => Ok(Some(root)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Saves or updates daily integrity for a date.
+    pub fn save_daily_integrity(
+        &self,
+        date: &str,
+        merkle_root: &str,
+        prev_day_root: Option<&str>,
+        session_count: u32,
+        signature: &str,
+    ) -> SqlResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT OR REPLACE INTO daily_integrity (date, merkle_root, prev_day_root, session_count, signature, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![date, merkle_root, prev_day_root, session_count as i64, signature, now],
+        )?;
+        Ok(())
+    }
+
+    /// Gets daily integrity for a specific date.
+    pub fn get_daily_integrity(&self, date: &str) -> SqlResult<Option<DailyIntegrityRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let result = conn.query_row(
+            "SELECT date, merkle_root, prev_day_root, session_count, signature, created_at 
+             FROM daily_integrity WHERE date = ?1",
+            params![date],
+            |row| {
+                Ok(DailyIntegrityRecord {
+                    date: row.get(0)?,
+                    merkle_root: row.get(1)?,
+                    prev_day_root: row.get(2)?,
+                    session_count: row.get::<_, i64>(3)? as u32,
+                    signature: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            },
+        );
+        match result {
+            Ok(record) => Ok(Some(record)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Gets all daily integrity records for verification.
+    pub fn get_all_daily_integrity(&self) -> SqlResult<Vec<DailyIntegrityRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT date, merkle_root, prev_day_root, session_count, signature, created_at 
+             FROM daily_integrity ORDER BY date",
+        )?;
+        let records = stmt
+            .query_map([], |row| {
+                Ok(DailyIntegrityRecord {
+                    date: row.get(0)?,
+                    merkle_root: row.get(1)?,
+                    prev_day_root: row.get(2)?,
+                    session_count: row.get::<_, i64>(3)? as u32,
+                    signature: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(records)
+    }
+
+    /// Gets dates that have sessions but no daily integrity record (incomplete days).
+    pub fn get_dates_missing_integrity(&self, exclude_today: &str) -> SqlResult<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT date(start_time) as session_date 
+             FROM sessions 
+             WHERE hash IS NOT NULL 
+               AND date(start_time) < ?1
+               AND date(start_time) NOT IN (SELECT date FROM daily_integrity)
+             ORDER BY session_date",
+        )?;
+        let dates = stmt
+            .query_map(params![exclude_today], |row| row.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(dates)
+    }
+
+    /// Saves a completed window session with integrity data.
     #[allow(clippy::too_many_arguments)]
     pub fn save_session(
         &self,
@@ -269,12 +452,15 @@ impl Database {
         clicks: u64,
         scrolls: u64,
         is_idle: bool,
+        hash: Option<&str>,
+        signature: Option<&str>,
+        prev_hash: Option<&str>,
     ) -> SqlResult<i64> {
         let conn = self.conn.lock().unwrap();
 
         conn.execute(
-            "INSERT INTO sessions (process_name, window_title, start_time, end_time, keystrokes, clicks, scrolls, is_idle)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO sessions (process_name, window_title, start_time, end_time, keystrokes, clicks, scrolls, is_idle, hash, signature, prev_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 process_name,
                 window_title,
@@ -284,6 +470,9 @@ impl Database {
                 clicks as i64,
                 scrolls as i64,
                 is_idle,
+                hash,
+                signature,
+                prev_hash,
             ],
         )?;
 
@@ -932,7 +1121,19 @@ mod tests {
         let end = start + chrono::Duration::seconds(60);
 
         let id = db
-            .save_session("test.exe", "Test Window", start, end, 100, 50, 10, false)
+            .save_session(
+                "test.exe",
+                "Test Window",
+                start,
+                end,
+                100,
+                50,
+                10,
+                false,
+                None,
+                None,
+                None,
+            )
             .unwrap();
 
         assert!(id > 0);
